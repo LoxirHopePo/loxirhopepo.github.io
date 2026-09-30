@@ -754,9 +754,10 @@ function trySwap(r1, c1, r2, c2) {
   const t = b[r1][c1]; b[r1][c1] = b[r2][c2]; b[r2][c2] = t;
   if (!wouldMatch(b, r1, c1, r2, c2)) {
     const t2 = b[r1][c1]; b[r1][c1] = b[r2][c2]; b[r2][c2] = t2;
-    // 交换失败：也播放交换回弹动画
+    // 交换失败：选中移动到用户刚点的格子（黄框跟手），方便继续和旁边消
+    M.sel = { r: r2, c: c2 };
     renderMini();
-    setMsg('❌ 这样换没有消除，再试试');
+    setMsg('❌ ' + CHAR[b[r2][c2]].name + ' 和 ' + CHAR[b[r1][c1]].name + ' 交换没有消除，已改为选中 ' + CHAR[b[r2][c2]].name + '，再点它的相邻牌试试');
     return;
   }
   M.stepsLeft--;
@@ -1154,22 +1155,58 @@ function foeAttack() {
 function doShuffle(auto) {
   if (!auto && (M.usedShuffle >= MAX_SHUFFLE || M.over)) return;
   if (!auto) M.usedShuffle++;
-  // 重排棋盘：保持同样角色，重新打散（保证有解）
-  const kinds = boardKeys(M.level);
-  const flat = [];
-  M.board.forEach(row => row.forEach(k => flat.push(k)));
-  let bb = [];
+  // 重排棋盘：保持同样角色，重新打散（用「逐格放置避开三连」算法，保证无现成消除）
+  const flat = M.board.flat();
+  let bbFinal = null;
   let tries = 0;
-  do {
-    for (let i = flat.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [flat[i], flat[j]] = [flat[j], flat[i]]; }
-    bb = [];
-    for (let r = 0; r < BOARD; r++) bb.push(flat.slice(r * BOARD, (r + 1) * BOARD));
-    tries++;
-  } while (!hasMove(bb) && tries < 30);
-  M.board = bb;
+  // 主算法：逐格放牌，避免左2/上2 三连
+  for (tries = 0; tries < 200 && !bbFinal; tries++) {
+    const bag = flat.slice();
+    const nb = [];
+    let ok = true;
+    outer:
+    for (let r = 0; r < BOARD && ok; r++) {
+      const row = [];
+      for (let c = 0; c < BOARD; c++) {
+        // 从不违反三连的牌里随机挑
+        const cands = [];
+        for (let i = 0; i < bag.length; i++) {
+          const k = bag[i];
+          if (c >= 2 && row[c-1] === k && row[c-2] === k) continue;
+          if (r >= 2 && nb[r-1] && nb[r-1][c] === k && nb[r-2] && nb[r-2][c] === k) continue;
+          cands.push(i);
+        }
+        if (!cands.length) { ok = false; break outer; }
+        const ci = cands[Math.floor(Math.random() * cands.length)];
+        row.push(bag[ci]);
+        bag.splice(ci, 1);
+      }
+      nb.push(row);
+    }
+    if (ok) {
+      // 最终还要有可解的一步
+      if (hasMove(nb)) { bbFinal = nb; }
+    }
+  }
+  if (!bbFinal) {
+    // 极端兜底：随机洗（可能有现成三连，靠下面逻辑自动消）
+    const flat2 = M.board.flat();
+    do {
+      for (let i = flat2.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [flat2[i], flat2[j]] = [flat2[j], flat2[i]]; }
+      bbFinal = [];
+      for (let r = 0; r < BOARD; r++) bbFinal.push(flat2.slice(r * BOARD, (r + 1) * BOARD));
+    } while (!hasMove(bbFinal));
+  }
+  M.board = bbFinal;
   M.specials = {};   // 重排后特殊牌位置失效，清掉
   M.sel = null;
   renderMini();
+  // 兜底：万一极端牌型洗不出"无现成三连"的盘，自动消掉现成的（不扣步数、视为连锁）
+  const pre = findMatches(bbFinal);
+  if (pre.length > 0 && !M.over) {
+    M.animBusy = true;
+    setTimeout(() => { if (!M.over) applyElimination(true); }, 380);
+  }
   if (!auto) setMsg('🔄 棋盘已重洗！');
 }
 function doUndo() {
